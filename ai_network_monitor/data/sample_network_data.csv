@@ -1,0 +1,3 @@
+timestamp,bandwidth,upload,download,latency,packet_loss,jitter,connections,pps,cpu,memory,error_rate,status
+2026-08-13T09:00:00,52.4,15.8,36.6,36.2,0.18,5.3,454,3920,55.4,53.1,0.08,Healthy
+
