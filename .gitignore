@@ -1,0 +1,13 @@
+# Python environments and cache
+.venv/
+ai_network_monitor/.venv/
+__pycache__/
+*.py[cod]
+
+# Runtime-generated application state
+ai_network_monitor/database/*.db
+ai_network_monitor/models/*.joblib
+
+# Generated delivery archives
+outputs/
+
