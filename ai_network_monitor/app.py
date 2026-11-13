@@ -1,4 +1,4 @@
-import json, os, sqlite3, threading, time
+import json, os, random, sqlite3, threading, time
 from datetime import datetime
 from functools import wraps
 from pathlib import Path
@@ -13,12 +13,21 @@ from models.fault_prediction_model import FaultModel
 ROOT = Path(__file__).parent
 DB = ROOT / 'database/network_monitor.db'
 app = Flask(__name__)
-app.config['SECRET_KEY'] = os.environ.get('SENTINEL_SECRET_KEY', 'change-this-sentinel-demo-key')
+app.config.update(
+    SECRET_KEY=os.environ.get('SENTINEL_SECRET_KEY', 'sentinel-local-demo-only-change-me'),
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE='Lax',
+    SESSION_COOKIE_SECURE=os.environ.get('SENTINEL_HTTPS', '0') == '1',
+)
 anom = AnomalyModel(ROOT / 'models/anomaly.joblib')
 fault = FaultModel(ROOT / 'models/fault.joblib')
 
 def conn():
-    c = sqlite3.connect(DB); c.row_factory = sqlite3.Row; return c
+    c = sqlite3.connect(DB, timeout=10)
+    c.row_factory = sqlite3.Row
+    c.execute('PRAGMA foreign_keys = ON')
+    c.execute('PRAGMA journal_mode = WAL')
+    return c
 
 def add_column(c, table, column, definition):
     if column not in [x['name'] for x in c.execute(f'PRAGMA table_info({table})')]:
@@ -37,6 +46,7 @@ def init():
       CREATE TABLE IF NOT EXISTS alerts (id INTEGER PRIMARY KEY, timestamp TEXT, category TEXT, message TEXT, unread INTEGER DEFAULT 1);
     ''')
     for table in ('network_metrics', 'anomalies', 'fault_predictions', 'devices', 'alerts'): add_column(c, table, 'domain_id', 'INTEGER DEFAULT 1')
+    add_column(c, 'devices', 'last_seen', 'TEXT')
     c.execute("INSERT OR IGNORE INTO domains(id,name,code) VALUES(1,'North Campus','NORTH'),(2,'Research Lab','RESEARCH'),(3,'Corporate Office','CORP')")
     accounts = [('north.operator','North Operator','Demo@123',1), ('lab.operator','Lab Operator','Demo@123',2), ('corp.operator','Corporate Operator','Demo@123',3)]
     for username, name, password, domain_id in accounts:
@@ -51,11 +61,12 @@ def init():
         c.commit()
     elif not anom.path.exists() or not fault.path.exists():
         df = historical(); anom.train(df); fault.train(df)
-    else: anom.load(); fault.load()
+    elif not anom.load() or not fault.load():
+        df = historical(); anom.train(df); fault.train(df)
     device_sets = {1:[('Router-N1','10.10.0.1'),('Switch-N1','10.10.0.10'),('PC-NORTH-01','10.10.1.21'),('PC-NORTH-02','10.10.1.22')],2:[('Router-R1','10.20.0.1'),('Lab-Switch-01','10.20.0.10'),('PC-LAB-01','10.20.1.11'),('PC-LAB-02','10.20.1.12')],3:[('Router-C1','10.30.0.1'),('Firewall-C1','10.30.0.254'),('PC-CORP-01','10.30.1.31'),('PC-CORP-02','10.30.1.32')]}
     if c.execute('SELECT count(*) FROM devices').fetchone()[0] < 8:
         for domain_id, devices in device_sets.items():
-            c.executemany('INSERT INTO devices(name,ip,status,cpu,memory,latency,packet_loss,health,domain_id) VALUES(?, ?, "Online",30,40,15,.1,94,?)', [(n, ip, domain_id) for n,ip in devices])
+            c.executemany('INSERT INTO devices(name,ip,status,cpu,memory,latency,packet_loss,health,domain_id,last_seen) VALUES(?, ?, "Online",30,40,15,.1,94,?,?)', [(n, ip, domain_id, datetime.now().isoformat(timespec='seconds')) for n,ip in devices])
         c.commit()
     # In this prototype each operator owns the endpoints in their assigned domain.
     # The mapping keeps device visibility user-scoped if multiple operators share a domain later.
@@ -96,6 +107,15 @@ def simulate_domain(domain_id):
     if kind != 'No Fault' and probability > .52:
         c.execute('INSERT INTO alerts(timestamp,category,message,domain_id) VALUES (?,?,?,?)',(record['timestamp'],'Warning',f'AI predicted {kind} ({probability:.0%})',domain_id))
     c.execute('INSERT INTO fault_predictions(timestamp,fault_type,probability,risk,domain_id) VALUES (?,?,?,?,?)',(record['timestamp'],kind,probability,level,domain_id))
+    device_rows=c.execute('SELECT id FROM devices WHERE domain_id=?', (domain_id,)).fetchall()
+    for device in device_rows:
+        cpu=min(100, max(4, record['cpu'] + random.uniform(-12, 12)))
+        memory=min(100, max(8, record['memory'] + random.uniform(-8, 8)))
+        latency=max(1, record['latency'] + random.uniform(-8, 8))
+        loss=max(.01, record['packet_loss'] + random.uniform(-.2, .5))
+        health=max(0, round(100 - latency / 5 - loss * 5 - cpu * .08))
+        status='Critical' if health < 55 else 'Warning' if health < 75 else 'Online'
+        c.execute('UPDATE devices SET status=?,cpu=?,memory=?,latency=?,packet_loss=?,health=?,last_seen=? WHERE id=?', (status,round(cpu,1),round(memory,1),round(latency,1),round(loss,2),health,record['timestamp'],device['id']))
     c.commit(); c.close(); return record
 
 def worker():
@@ -147,10 +167,13 @@ def traffic(): return jsonify(metrics=latest_metrics(current_user()['domain_id']
 @app.route('/api/anomalies')
 @login_required
 def anomalies():
-    data=scoped_rows('SELECT * FROM anomalies WHERE domain_id=? ORDER BY id DESC LIMIT 300',(current_user()['domain_id'],)); sev=request.args.get('severity')
-    if sev: data=[x for x in data if x['severity']==sev]
+    domain=current_user()['domain_id']; severity_filter=request.args.get('severity','').title(); query=request.args.get('q','').strip().lower(); page=max(1,request.args.get('page',1,type=int)); per_page=min(100,max(5,request.args.get('per_page',10,type=int)))
+    data=scoped_rows('SELECT * FROM anomalies WHERE domain_id=? ORDER BY id DESC LIMIT 300',(domain,))
+    if severity_filter in ('Low','Medium','High'): data=[x for x in data if x['severity']==severity_filter]
     for x in data: x.update(json.loads(x.pop('data')))
-    return jsonify(data)
+    if query: data=[x for x in data if query in x['cause'].lower() or query in x['timestamp'].lower()]
+    total=len(data); start=(page-1)*per_page
+    return jsonify(items=data[start:start+per_page],total=total,page=page,per_page=per_page,pages=max(1,(total+per_page-1)//per_page))
 
 @app.route('/api/fault-prediction')
 @login_required
@@ -167,11 +190,27 @@ def devices():
         WHERE ud.user_id=? AND d.domain_id=?
     ''', (current_user()['id'], current_user()['domain_id'])))
 
+@app.route('/api/devices/<int:device_id>')
+@login_required
+def device_detail(device_id):
+    devices=scoped_rows('''
+        SELECT d.* FROM devices d INNER JOIN user_devices ud ON ud.device_id=d.id
+        WHERE d.id=? AND ud.user_id=? AND d.domain_id=?
+    ''', (device_id,current_user()['id'],current_user()['domain_id']))
+    if not devices: return jsonify(error='Device not found'),404
+    return jsonify(devices[0])
+
 @app.route('/api/alerts')
 @login_required
 def alerts(): return jsonify(scoped_rows('SELECT * FROM alerts WHERE domain_id=? ORDER BY id DESC LIMIT 100',(current_user()['domain_id'],)))
 
-@app.route('/api/simulate',methods=['POST','GET'])
+@app.route('/api/alerts/mark-read', methods=['POST'])
+@login_required
+def mark_alerts_read():
+    c=conn(); c.execute('UPDATE alerts SET unread=0 WHERE domain_id=?',(current_user()['domain_id'],)); c.commit(); c.close()
+    return jsonify(success=True)
+
+@app.route('/api/simulate',methods=['POST'])
 @login_required
 def api_simulate(): return jsonify(simulate_domain(current_user()['domain_id']))
 
