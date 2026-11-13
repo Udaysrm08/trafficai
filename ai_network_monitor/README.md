@@ -1,6 +1,6 @@
 # Sentinel NOC — AI-Powered Network Traffic Analysis and Fault Prediction
 
-A polished, live Flask prototype for a B.Tech 7th Semester minor project. It simulates realistic traffic, stores events in SQLite, detects anomalies with Isolation Forest, and predicts fault categories with a Random Forest classifier.
+A complete B.Tech 7th Semester minor-project application for domain-scoped network monitoring. It simulates realistic traffic, stores events in SQLite, detects anomalies with Isolation Forest, and predicts fault categories with a Random Forest classifier.
 
 ## Requirements
 
@@ -33,6 +33,7 @@ Then open http://127.0.0.1:5000. Stop the server with `Ctrl+C`.
 3. `models/anomaly.joblib` (Isolation Forest) and `models/fault.joblib` (Random Forest) are trained and saved.
 4. A background simulator adds a new telemetry interval every five seconds.
 5. Every interval is analyzed, persisted, and reflected in the dashboard automatically.
+6. Device health, CPU, memory, latency, packet loss, and status are updated with every simulation cycle.
 
 ## Sign in and domain isolation
 
@@ -44,11 +45,21 @@ The application now includes session-based login. Every operator is assigned to 
 | `lab.operator` | `Demo@123` | Research Lab |
 | `corp.operator` | `Demo@123` | Corporate Office |
 
-For production, set a strong secret key before launching: `$env:SENTINEL_SECRET_KEY='your-long-random-secret'`.
+For production, set a strong secret key before launching: `$env:SENTINEL_SECRET_KEY='your-long-random-secret'`. If served through HTTPS, also set `$env:SENTINEL_HTTPS='1'` before starting the application.
+
+## Final-project functionality
+
+- Domain and user-scoped dashboards, alerts, AI predictions, and endpoint inventory.
+- User-to-device assignments through `user_devices`, so the endpoint page returns only assigned PCs/devices.
+- Live traffic range selector (1 hour, 6 hours, or 24 hours).
+- Searchable, severity-filtered, paginated anomaly history.
+- Device telemetry refreshed as simulation cycles run.
+- Alert acknowledgement through **Mark all as read**.
+- Persistent SQLite database with WAL mode and foreign key enforcement.
 
 ## REST API
 
-`/api/dashboard`, `/api/metrics`, `/api/traffic`, `/api/anomalies`, `/api/fault-prediction`, `/api/devices`, `/api/alerts`, and `/api/simulate` return JSON. Use `/api/simulate` to immediately generate one telemetry interval for demonstration.
+`/api/dashboard`, `/api/metrics`, `/api/traffic`, `/api/anomalies`, `/api/fault-prediction`, `/api/devices`, `/api/devices/<id>`, `/api/alerts`, `/api/alerts/mark-read`, and `/api/simulate` return JSON. Use `POST /api/simulate` to immediately generate one telemetry interval for demonstration.
 
 ## Project layout
 
