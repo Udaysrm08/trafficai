@@ -1,4 +1,6 @@
 import joblib
+import pandas as pd
+import sklearn
 from pathlib import Path
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
@@ -14,10 +16,12 @@ class FaultModel:
         self.model.fit(a,c); p=self.model.predict(b)
         pr,re,f,_=precision_recall_fscore_support(d,p,average='weighted',zero_division=0)
         self.metrics={'accuracy':round(accuracy_score(d,p)*100,1),'precision':round(pr*100,1),'recall':round(re*100,1),'f1':round(f*100,1)}
-        joblib.dump({'model':self.model,'metrics':self.metrics},self.path)
+        joblib.dump({'model':self.model,'metrics':self.metrics,'sklearn_version':sklearn.__version__},self.path)
     def load(self):
-        obj=joblib.load(self.path); self.model=obj['model']; self.metrics=obj.get('metrics',{})
+        obj=joblib.load(self.path)
+        if obj.get('sklearn_version') != sklearn.__version__: return False
+        self.model=obj['model']; self.metrics=obj.get('metrics',{}); return True
     def predict(self,row):
-        x=[[row[k] for k in FEATURES]]; probs=self.model.predict_proba(x)[0]; i=probs.argmax()
+        x=pd.DataFrame([[row[k] for k in FEATURES]],columns=FEATURES); probs=self.model.predict_proba(x)[0]; i=probs.argmax()
         return self.model.classes_[i], float(probs[i])
 
